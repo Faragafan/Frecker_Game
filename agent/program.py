@@ -45,7 +45,7 @@ class Agent:
     def update(self, color: PlayerColor, action: Action, **referee):
         # Apply the executed action to real game state
         if isinstance(action, MoveAction):
-            self._apply_move(color, action.coord, action.dirs, self.board,
+            self._apply_move(color, action.coord, action.directions, self.board,
                               self.my_frogs if color==self._color else self.opp_frogs)
         else:
             self._apply_grow(color, self.board)
@@ -87,50 +87,82 @@ class Agent:
         actions = self._generate_moves_from(board0, my0, op0, self._color) + [GrowAction()]
         alpha, beta = -math.inf, math.inf
         best_val, best_act = -math.inf, None
+
         for act in actions:
-            b1, m1, o1 = self._clone_state()
+            # clone *that* search state, not self.*
+            b1 = [row.copy() for row in board0]
+            m1, o1 = my0.copy(), op0.copy()
+
             if isinstance(act, MoveAction):
-                self._apply_move(self._color, act.coord, act.dirs, b1, m1)
+                self._apply_move(self._color, act.coord, act.directions, b1, m1)
             else:
                 self._apply_grow(self._color, b1)
+
             val = self._min_value(b1, m1, o1, depth-1, alpha, beta)
             if val > best_val:
                 best_val, best_act = val, act
                 alpha = max(alpha, val)
-        return best_act
 
+        return best_act
+    
     def _max_value(self, board, my_frogs, opp_frogs, depth, alpha, beta):
         if depth == 0:
             return self._evaluate(board, my_frogs)
         value = -math.inf
-        for mv in self._generate_moves_from(board, my_frogs, opp_frogs, self._color):
-            b2, m2 = self._clone_inner(board, my_frogs)
-            o2 = opp_frogs.copy()
-            self._apply_move(self._color, mv.coord, mv.dirs, b2, m2)
+
+        # consider both MOVE and GROW for yourself
+        actions = self._generate_moves_from(board, my_frogs, opp_frogs, self._color)
+        actions.append(GrowAction())
+
+        for act in actions:
+            b2 = [row.copy() for row in board]
+            o2 = opp_frogs.copy()   # frogs is the opp_frogs passed in
+            m2 = my_frogs.copy()
+
+            # simulate
+            if isinstance(act, MoveAction):
+                self._apply_move(self._color, act.coord, act.directions, b2, m2)
+            else:
+                self._apply_grow(self._color, b2)
+
+            # recurse
             res = self._min_value(b2, m2, o2, depth-1, alpha, beta)
             value = max(value, res)
             if value >= beta:
                 return value
             alpha = max(alpha, value)
+
         return value
+
 
     def _min_value(self, board, my_frogs, opp_frogs, depth, alpha, beta):
         if depth == 0:
             return self._evaluate(board, opp_frogs)
         value = math.inf
-        for mv in self._generate_moves_from(board, opp_frogs, my_frogs, self.enemy_color):
-            b2, o2 = self._clone_inner(board, opp_frogs)
+
+        # consider both MOVE and GROW for opponent
+        actions = self._generate_moves_from(board, opp_frogs, my_frogs, self.enemy_color)
+        actions.append(GrowAction())
+
+        for act in actions:
+            b2 = [row.copy() for row in board]
+            o2 = opp_frogs.copy()
             m2 = my_frogs.copy()
-            if isinstance(mv, MoveAction):
-                self._apply_move(self.enemy_color, mv.coord, mv.dirs, b2, o2)
+            # simulate
+            if isinstance(act, MoveAction):
+                self._apply_move(self.enemy_color, act.coord, act.directions, b2, o2)
             else:
                 self._apply_grow(self.enemy_color, b2)
+
+            # recurse
             res = self._max_value(b2, m2, o2, depth-1, alpha, beta)
             value = min(value, res)
             if value <= alpha:
                 return value
             beta = min(beta, value)
+
         return value
+
 
     def _generate_moves_from(self,
                              board: list[list[str|None]],
@@ -174,11 +206,29 @@ class Agent:
         score -= 50 * sum(1 for f in opp_list if f.r == og)
         # trapped/mobility
         for f in frogs:
-            cnt = sum(1 for d in Direction if (n:=f+d) and 0<=n.r<8 and 0<=n.c<8 and board[n.r][n.c]=='lilypad')
-            if cnt == 0: score -= 20
+            cnt = 0
+            for d in Direction:
+                try:
+                    n = f + d
+                    if 0 <= n.r < 8 and 0 <= n.c < 8 and board[n.r][n.c] == 'lilypad':
+                        cnt += 1
+                except ValueError:
+                    continue
+            if cnt == 0:
+                score -= 20
+
         for f in opp_list:
-            cnt = sum(1 for d in Direction if (n:=f+d) and 0<=n.r<8 and 0<=n.c<8 and board[n.r][n.c]=='lilypad')
-            if cnt == 0: score += 20
+            cnt = 0
+            for d in Direction:
+                try:
+                    n = f + d
+                    if 0 <= n.r < 8 and 0 <= n.c < 8 and board[n.r][n.c] == 'lilypad':
+                        cnt += 1
+                except ValueError:
+                    continue
+            if cnt == 0:
+                score += 20
+
         # adjacency reward
         for f in frogs:
             for d in Direction:
