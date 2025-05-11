@@ -1,239 +1,309 @@
-from referee.game import MoveAction, GrowAction, Direction, Coord, PlayerColor, Action
+# COMP30024 Artificial Intelligence, Semester 1 2025
+# Project Part B: Game Playing Agent
+from __future__ import annotations
+from typing import List, Set
+from referee.game import PlayerColor, Coord, Direction, Action, MoveAction, GrowAction
+import random
 import math
+import time
 
 class Agent:
     """
-    Game-playing agent for Freckers using Alpha-Beta search for MOVE and GROW actions.
+    Freckers agent using alpha-beta search over GameState.
     """
     def __init__(self, color: PlayerColor, **referee):
-        self._color = color
-        self.enemy_color = PlayerColor.RED if color == PlayerColor.BLUE else PlayerColor.BLUE
-        # Initial board and frog lists
-        self.board = self._init_board()
-        self.my_frogs = self._init_frogs(self._color)
-        self.opp_frogs = self._init_frogs(self.enemy_color)
-
-    def _init_board(self) -> list[list[str | None]]:
-        board = [[None for _ in range(8)] for _ in range(8)]
-        # Place frogs
-        for r, c, color_str in [
-            (0,1,'red'),(0,2,'red'),(0,3,'red'),(0,4,'red'),(0,5,'red'),(0,6,'red'),
-            (7,1,'blue'),(7,2,'blue'),(7,3,'blue'),(7,4,'blue'),(7,5,'blue'),(7,6,'blue')]:
-            board[r][c] = color_str
-        # Place lilypads
-        for r, c in [
-            (0,0),(0,1),(0,2),(0,3),(0,4),(0,5),(0,6),(0,7),
-            (1,1),(1,2),(1,3),(1,4),(1,5),(1,6),
-            (6,1),(6,2),(6,3),(6,4),(6,5),(6,6),
-            (7,0),(7,1),(7,2),(7,3),(7,4),(7,5),(7,6),(7,7)
-        ]:
-            if board[r][c] is None:
-                board[r][c] = 'lilypad'
-        return board
-
-    def _init_frogs(self, color: PlayerColor) -> list[Coord]:
-        if color == PlayerColor.RED:
-            return [Coord(0,1), Coord(0,2), Coord(0,3), Coord(0,4), Coord(0,5), Coord(0,6)]
-        else:
-            return [Coord(7,1), Coord(7,2), Coord(7,3), Coord(7,4), Coord(7,5), Coord(7,6)]
+        self.color = color
+        self.enemy = PlayerColor.RED if color == PlayerColor.BLUE else PlayerColor.BLUE
+        self.state = GameState()
+        self.time_limit = 1.0  # seconds per move
 
     def action(self, **referee) -> Action:
-        # Choose best action via alpha-beta search
-        choice = self._alpha_beta_search(depth=3)
-        return choice if choice is not None else GrowAction()
+        start_time = time.time()
+        # set turn
+        self.state.current_player = self.color
 
-    def update(self, color: PlayerColor, action: Action, **referee):
-        # Apply the executed action to real game state
-        if isinstance(action, MoveAction):
-            self._apply_move(color, action.coord, action.directions, self.board,
-                              self.my_frogs if color==self._color else self.opp_frogs)
-        else:
-            self._apply_grow(color, self.board)
+        best_action = GrowAction()
+        best_value = float('-inf')
+        alpha, beta = float('-inf'), float('inf')
+        depth = 3
 
-    def _apply_move(self, color: PlayerColor, start: Coord, dirs: list[Direction],
-                    board: list[list[str|None]], frogs: list[Coord]):
-        cur = start
-        for d in dirs:
-            cur = cur + d
-        dest = cur
-        cstr = 'red' if color==PlayerColor.RED else 'blue'
-        board[start.r][start.c] = None
-        board[dest.r][dest.c] = cstr
-        frogs.remove(start)
-        frogs.append(dest)
+        for act in self.state.get_legal_actions():
+            next_state = self.state.clone()
+            next_state.apply_action(act)
+            value = self._min_value(next_state, depth - 1, alpha, beta, start_time)
+            if value > best_value:
+                best_value, best_action = value, act
+                alpha = max(alpha, value)
+            if alpha >= beta or time.time() - start_time > self.time_limit:
+                break
 
-    def _apply_grow(self, color: PlayerColor, board: list[list[str|None]]):
-        cstr = 'red' if color==PlayerColor.RED else 'blue'
-        for r in range(8):
-            for c in range(8):
-                if board[r][c] == cstr:
-                    origin = Coord(r,c)
-                    for d in Direction:
-                        try:
-                            adj = origin + d
-                            if 0 <= adj.r < 8 and 0 <= adj.c < 8 and board[adj.r][adj.c] is None:
-                                board[adj.r][adj.c] = 'lilypad'
-                        except ValueError:
-                            continue
+        # **DO NOT** mutate self.state here; referee will call update()
+        return best_action
 
-    def _clone_state(self):
-        return [row.copy() for row in self.board], self.my_frogs.copy(), self.opp_frogs.copy()
+    def update(self, color_of_player_who_acted: PlayerColor, action_performed: Action, **referee):
+        self.state.current_player = color_of_player_who_acted
+        self.state.apply_action(action_performed)
 
-    def _clone_inner(self, board: list[list[str|None]], frogs: list[Coord]):
-        return [row.copy() for row in board], frogs.copy()
+    def _max_value(self, state: GameState, depth: int, alpha: float, beta: float, start_time: float) -> float:
+        if depth == 0 or state.is_terminal():
+            return self._evaluate(state)
+        v = float('-inf')
+        for act in state.get_legal_actions():
+            nxt = state.clone()
+            nxt.apply_action(act)
+            v = max(v, self._min_value(nxt, depth - 1, alpha, beta, start_time))
+            if v >= beta or time.time() - start_time > self.time_limit:
+                return v
+            alpha = max(alpha, v)
+        return v
 
-    def _alpha_beta_search(self, depth: int) -> Action | None:
-        board0, my0, op0 = self._clone_state()
-        actions = self._generate_moves_from(board0, my0, op0, self._color) + [GrowAction()]
-        alpha, beta = -math.inf, math.inf
-        best_val, best_act = -math.inf, None
+    def _min_value(self, state: GameState, depth: int, alpha: float, beta: float, start_time: float) -> float:
+        if depth == 0 or state.is_terminal():
+            return self._evaluate(state)
+        v = float('inf')
+        for act in state.get_legal_actions():
+            nxt = state.clone()
+            nxt.apply_action(act)
+            v = min(v, self._max_value(nxt, depth - 1, alpha, beta, start_time))
+            if v <= alpha or time.time() - start_time > self.time_limit:
+                return v
+            beta = min(beta, v)
+        return v
 
-        for act in actions:
-            # clone *that* search state, not self.*
-            b1 = [row.copy() for row in board0]
-            m1, o1 = my0.copy(), op0.copy()
-
-            if isinstance(act, MoveAction):
-                self._apply_move(self._color, act.coord, act.directions, b1, m1)
-            else:
-                self._apply_grow(self._color, b1)
-
-            val = self._min_value(b1, m1, o1, depth-1, alpha, beta)
-            if val > best_val:
-                best_val, best_act = val, act
-                alpha = max(alpha, val)
-
-        return best_act
+    def _evaluate(self, state: GameState) -> float:
+        # Distance to goal
+        red_dist = sum((7 - pos.r) for pos, owner in state.frogs.items() if owner == PlayerColor.RED)
+        blue_dist = sum(pos.r for pos, owner in state.frogs.items() if owner == PlayerColor.BLUE)
+        dist_score = (blue_dist - red_dist) if self.color == PlayerColor.RED else (red_dist - blue_dist)
+        # Mobility
+        my_moves = len(state.get_legal_actions())
+        # temporarily flip to get opponent moves
+        state.current_player = self.enemy
+        opp_moves = len(state.get_legal_actions())
+        state.current_player = self.color
+        mobility_score = my_moves - opp_moves
+        # Pad adjacency
+        pad_bonus = 0
+        for pos, owner in state.frogs.items():
+            cnt = 0
+            for d in Direction:
+                try:
+                    nbr = pos + d
+                    if 0 <= nbr.r < 8 and 0 <= nbr.c < 8 and nbr in state.lily_pads:
+                        cnt += 1
+                except ValueError:
+                    continue
+            pad_bonus += cnt if owner == self.color else -cnt
+        # Terminal
+        if state.is_terminal():
+            winner = state.get_winner()
+            if winner == self.color: return float('inf')
+            if winner == self.enemy: return float('-inf')
+        return 40 * dist_score + 5 * mobility_score + pad_bonus
     
-    def _max_value(self, board, my_frogs, opp_frogs, depth, alpha, beta):
-        if depth == 0:
-            return self._evaluate(board, my_frogs)
-        value = -math.inf
+class GameState:
+    """
+    Freckers 游戏状态：跟踪莲叶和青蛙位置，维护当前玩家和回合计数。
+    """
+    # 两种玩家的前进方向（红方：向下及横向；蓝方：向上及横向） 
+    RED_DIRS = [Direction.Right, Direction.Left, Direction.Down, Direction.DownRight, Direction.DownLeft]
+    BLUE_DIRS = [Direction.Right, Direction.Left, Direction.Up, Direction.UpRight, Direction.UpLeft]
+    ALL_DIRS = list(Direction)
+    MAX_TURNS = 150  # 上限动作数 
 
-        # consider both MOVE and GROW for yourself
-        actions = self._generate_moves_from(board, my_frogs, opp_frogs, self._color)
+    def __init__(self, lily_pads=None, frogs=None, current_player=PlayerColor.RED, turn=0):
+        if lily_pads is None or frogs is None:
+            self.lily_pads, self.frogs = self._init_board()
+        else:
+            self.lily_pads = set(lily_pads)
+            self.frogs = dict(frogs)
+        self.current_player = current_player
+        self.turn = turn
+
+    def _init_board(self):
+        # 根据规则文档 Fig3 初始化28个莲叶和12个青蛙位置。
+        # 这里需填入实际坐标列表，示例中留作占位。
+        initial_lily = set([Coord(0,0),Coord(0,1),Coord(0,2),Coord(0,3),Coord(0,4),Coord(0,5),Coord(0,6),Coord(0,7),
+            Coord(1,1),Coord(1,2),Coord(1,3),Coord(1,4),Coord(1,5),Coord(1,6),
+            Coord(6,1),Coord(6,2),Coord(6,3),Coord(6,4),Coord(6,5),Coord(6,6),
+            Coord(7,0),Coord(7,1),Coord(7,2),Coord(7,3),Coord(7,4),Coord(7,5),Coord(7,6),Coord(7,7)
+            
+        ])
+        initial_frogs = {
+            # TODO: 填入红方6只青蛙和蓝方6只青蛙初始位置
+            # 例如 Coord(0,3): PlayerColor.RED, Coord(7,4): PlayerColor.BLUE, ...
+            Coord(0, 1): PlayerColor.RED, Coord(0, 2): PlayerColor.RED,
+            Coord(0, 3): PlayerColor.RED, Coord(0, 4): PlayerColor.RED,
+            Coord(0, 5): PlayerColor.RED, Coord(0, 6): PlayerColor.RED,
+            Coord(7, 1): PlayerColor.BLUE, Coord(7, 2): PlayerColor.BLUE,
+            Coord(7, 3): PlayerColor.BLUE, Coord(7, 4): PlayerColor.BLUE,
+            Coord(7, 5): PlayerColor.BLUE, Coord(7, 6): PlayerColor.BLUE
+        }
+        return initial_lily, initial_frogs
+
+    def clone(self):
+        return GameState(self.lily_pads, self.frogs, self.current_player, self.turn)
+
+    def get_legal_actions(self) -> List[Action]:
+        """
+        Return only the moves and grow for `player`.  
+        Single‐step moves are one‐cell hops; multi‐jumps are built
+        by _get_all_jump_sequences. No mixing.
+        """
+        player = self.current_player
+        actions: List[Action] = []
+        dirs = self.RED_DIRS if player == PlayerColor.RED else self.BLUE_DIRS
+
+        for src, frog_owner in self.frogs.items():
+            if frog_owner != player:
+                continue
+
+            # 1) Single‐step moves (exactly one cell)
+            for d in dirs:
+                try:
+                    dst = src + d
+                    if dst in self.lily_pads and dst not in self.frogs:
+                        actions.append(MoveAction(src, (d,)))
+                except ValueError:
+                    pass
+
+            # 2) Jump sequences (2+ cells per segment), only over occupied mids
+            self._get_all_jump_sequences(
+                player=player,
+                original_src=src,
+                current_pos=src,
+                current_path_dirs=[],
+                legal_actions_list=actions,
+                visited_landings=set()
+            )
+
+        # 3) Growing is always legal
         actions.append(GrowAction())
-
-        for act in actions:
-            b2 = [row.copy() for row in board]
-            o2 = opp_frogs.copy()   # frogs is the opp_frogs passed in
-            m2 = my_frogs.copy()
-
-            # simulate
+        def action_priority(act: Action):
+            # multi-jump has highest priority
             if isinstance(act, MoveAction):
-                self._apply_move(self._color, act.coord, act.directions, b2, m2)
-            else:
-                self._apply_grow(self._color, b2)
-
-            # recurse
-            res = self._min_value(b2, m2, o2, depth-1, alpha, beta)
-            value = max(value, res)
-            if value >= beta:
-                return value
-            alpha = max(alpha, value)
-
-        return value
-
-
-    def _min_value(self, board, my_frogs, opp_frogs, depth, alpha, beta):
-        if depth == 0:
-            return self._evaluate(board, opp_frogs)
-        value = math.inf
-
-        # consider both MOVE and GROW for opponent
-        actions = self._generate_moves_from(board, opp_frogs, my_frogs, self.enemy_color)
-        actions.append(GrowAction())
-
-        for act in actions:
-            b2 = [row.copy() for row in board]
-            o2 = opp_frogs.copy()
-            m2 = my_frogs.copy()
-            # simulate
-            if isinstance(act, MoveAction):
-                self._apply_move(self.enemy_color, act.coord, act.directions, b2, o2)
-            else:
-                self._apply_grow(self.enemy_color, b2)
-
-            # recurse
-            res = self._max_value(b2, m2, o2, depth-1, alpha, beta)
-            value = min(value, res)
-            if value <= alpha:
-                return value
-            beta = min(beta, value)
-
-        return value
+                is_jump = len(act.directions) > 1
+                # compute net row change for forward move
+                src = act.coord
+                dst = src
+                for step in act.directions:
+                    dst = dst + step
+                # for RED, forward is increasing r; for BLUE, decreasing r
+                forward_delta = (dst.r - src.r) if player == PlayerColor.RED else (src.r - dst.r)
+                lateral_delta = abs(dst.c - src.c)
+                # priority tuple: jump first, then larger forward_delta, then smaller lateral
+                return (0 if is_jump else 1, -forward_delta, lateral_delta)
+            # grow last
+            return (2, 0, 0)
+        actions.sort(key=action_priority)
+        return actions
 
 
-    def _generate_moves_from(self,
-                             board: list[list[str|None]],
-                             my_frogs: list[Coord],
-                             opp_frogs: list[Coord],
-                             color: PlayerColor
-                            ) -> list[MoveAction]:
-        def in_bounds(co: Coord) -> bool:
-            return 0 <= co.r < 8 and 0 <= co.c < 8
-        def neighbor(co: Coord, d: Direction, steps: int=1) -> Coord | None:
+
+    def _get_all_jump_sequences(self,
+                                player: PlayerColor,
+                                original_src: Coord,
+                                current_pos: Coord,
+                                current_path_dirs: List[Direction],
+                                legal_actions_list: List[Action],
+                                visited_landings: Set[Coord]):
+        """
+        Build ALL valid jump MoveActions for a frog of `player` starting
+        at original_src.  Each direction d here represents a *jump* of 2 cells:
+        mid = current_pos + d  (must have a frog)
+        landing = mid + d      (must be an empty lily pad)
+        """
+        jump_dirs = self.RED_DIRS if player == PlayerColor.RED else self.BLUE_DIRS
+
+        for d in jump_dirs:
             try:
-                nx = co + (d.value * steps)
-                return nx if in_bounds(nx) else None
+                mid     = current_pos + d
+                landing = mid + d
+
+                # check the four jump conditions
+                if (mid in self.frogs
+                    and landing in self.lily_pads
+                    and landing not in self.frogs
+                    and landing not in visited_landings):
+
+                    new_path = current_path_dirs + [d]
+                    legal_actions_list.append(MoveAction(original_src, tuple(new_path)))
+
+                    visited_landings.add(landing)
+                    # recurse to chain further jumps
+                    self._get_all_jump_sequences(
+                        player=player,
+                        original_src=original_src,
+                        current_pos=landing,
+                        current_path_dirs=new_path,
+                        legal_actions_list=legal_actions_list,
+                        visited_landings=visited_landings
+                    )
+                    visited_landings.remove(landing)
+
             except ValueError:
-                return None
-        frogs = my_frogs if color == self._color else opp_frogs
-        moves: list[MoveAction] = []
-        for f in frogs:
-            # single-hop
-            for d in Direction:
-                n = neighbor(f, d, 1)
-                if n and board[n.r][n.c] == 'lilypad':
-                    moves.append(MoveAction(f, [d]))
-            # single-jump
-            for d in Direction:
-                mid = neighbor(f, d, 1)
-                dst = neighbor(f, d, 2)
-                if mid and dst and board[mid.r][mid.c] in ('red','blue') and board[dst.r][dst.c] == 'lilypad':
-                    moves.append(MoveAction(f, [d]))
-        return moves
+                # move off‐board
+                continue
 
-    def _evaluate(self, board: list[list[str|None]], frogs: list[Coord]) -> float:
-        my_dist = sum(f.r for f in frogs)
-        opp_list = [Coord(r,c) for r in range(8) for c in range(8)
-                    if board[r][c] == ('blue' if self._color==PlayerColor.RED else 'red')]
-        opp_dist = sum(f.r for f in opp_list)
-        score = my_dist - opp_dist
-        goal = 7 if self._color==PlayerColor.RED else 0
-        score += 50 * sum(1 for f in frogs if f.r == goal)
-        og = 7 if self.enemy_color==PlayerColor.RED else 0
-        score -= 50 * sum(1 for f in opp_list if f.r == og)
-        # trapped/mobility
-        for f in frogs:
-            cnt = 0
-            for d in Direction:
+
+    def apply_action(self, action):
+        if isinstance(action, GrowAction):
+            new_pads = set()
+            for pos, owner in self.frogs.items():
+                if owner != self.current_player: continue
+                for d in self.ALL_DIRS:
+                    try:
+                        pad = pos + d
+                        if 0 <= pad.r < 8 and 0 <= pad.c < 8 and pad not in self.lily_pads and pad not in self.frogs:
+                            new_pads.add(pad)
+                    except ValueError:
+                        pass
+            self.lily_pads |= new_pads
+        else:
+            # MOVEAction
+            assert action.coord in self.frogs, f"No frog at {action.coord!r}"
+            src = action.coord
+            if src in self.lily_pads:
+                self.lily_pads.remove(src)
+            pos = src
+            for d in action.directions:
                 try:
-                    n = f + d
-                    if 0 <= n.r < 8 and 0 <= n.c < 8 and board[n.r][n.c] == 'lilypad':
-                        cnt += 1
+                    mid = pos + d
+                    land = mid + d
+                    if mid in self.frogs and land in self.lily_pads and land not in self.frogs:
+                        pos = land
+                    else:
+                        pos = pos + d
                 except ValueError:
-                    continue
-            if cnt == 0:
-                score -= 20
+                    pos = pos + d
+            self.frogs.pop(src)
+            self.frogs[pos] = self.current_player
+        # flip turn
+        self.current_player = PlayerColor.BLUE if self.current_player == PlayerColor.RED else PlayerColor.RED
+        self.turn += 1
 
-        for f in opp_list:
-            cnt = 0
-            for d in Direction:
-                try:
-                    n = f + d
-                    if 0 <= n.r < 8 and 0 <= n.c < 8 and board[n.r][n.c] == 'lilypad':
-                        cnt += 1
-                except ValueError:
-                    continue
-            if cnt == 0:
-                score += 20
 
-        # adjacency reward
-        for f in frogs:
-            for d in Direction:
-                try:
-                    n = f + d
-                    if 0<=n.r<8 and 0<=n.c<8 and board[n.r][n.c]=='lilypad': score += 1
-                except ValueError: pass
-        return score
+    def is_terminal(self):
+        # 检查任一玩家是否所有青蛙抵达对岸，或达到最大回合数
+        red_goal = [f.r == 7 for f, p in self.frogs.items() if p == PlayerColor.RED]
+        blue_goal = [f.r == 0 for f, p in self.frogs.items() if p == PlayerColor.BLUE]
+        if len(red_goal) == 6 and all(red_goal):
+            return True
+        if len(blue_goal) == 6 and all(blue_goal):
+            return True
+        return self.turn >= self.MAX_TURNS
+
+    def get_winner(self):
+        # 根据胜利条件返回胜者或 None 表示平局
+        if all(f.r == 7 for f, p in self.frogs.items() if p == PlayerColor.RED):
+            return PlayerColor.RED
+        if all(f.r == 0 for f, p in self.frogs.items() if p == PlayerColor.BLUE):
+            return PlayerColor.BLUE
+        # 回合耗尽，比较抵达对岸数量
+        red_count = sum(1 for f, p in self.frogs.items() if p == PlayerColor.RED and f.r == 7)
+        blue_count = sum(1 for f, p in self.frogs.items() if p == PlayerColor.BLUE and f.r == 0)
+        if red_count > blue_count:
+            return PlayerColor.RED
+        if blue_count > red_count:
+            return PlayerColor.BLUE
+        return None
