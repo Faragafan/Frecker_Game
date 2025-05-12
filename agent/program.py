@@ -105,7 +105,7 @@ class Agent:
             if winner == self.enemy:
                 return float('-inf')
 
-        return 40 * dist_score + 5 * mobility_score + pad_bonus
+        return 50 * dist_score + 10 * mobility_score + pad_bonus
 
 class GameState:
     """
